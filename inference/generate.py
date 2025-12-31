@@ -94,7 +94,7 @@ def generate(
 
     # ---- Prefix cache lookup (control-plane, excluded from TTFT) ----
     t_lookup_start = time.time()
-    cached = prefix_cache.find_longest_prefix(prompt, device)
+    cached = prefix_cache.lookup_longest_prefix(prompt, device)
     timings["cache_lookup_ms"] = (time.time() - t_lookup_start) * 1000
 
     # ---- Start TTFT clock ONLY before first model-critical step ----
@@ -115,7 +115,7 @@ def generate(
         timings["cached_tokens"] = 0
         timings["cache_hit_rate"] = 0.0
         
-        prefix_cache.add(
+        prefix_cache.insert(
             prefix_text=prompt,
             prefix_tokens=input_ids,
             past_key_values=past_key_values,

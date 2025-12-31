@@ -106,7 +106,7 @@ Your goal is to make complex AI concepts accessible while maintaining technical 
     )
     prefix_tokens = prime_timings.get('total_prompt_tokens', 0)
     print(f"Cached {prefix_tokens} prefix tokens")
-    print(f"Cache entries: {len(cache._store)}")
+    print(f"Cache entries: {len(cache._entries)}")
     
     print("\n" + "="*80)
     print("RUNNING BENCHMARK")
@@ -166,10 +166,22 @@ Your goal is to make complex AI concepts accessible while maintaining technical 
     
     stats = cache.get_stats()
     print(f"\nCache Statistics:")
-    print(f"  Entries: {stats['size']}")
+    print(f"  Entries: {stats['size']}/{stats['capacity']}")
     print(f"  Hits: {stats['hits']}")
     print(f"  Misses: {stats['misses']}")
     print(f"  Hit rate: {stats['hit_rate']:.1%}")
+    print(f"  Evictions: {stats['total_evictions']} (LRU: {stats['evictions_lru']}, TTL: {stats['evictions_ttl']})")
+    
+    # Calculate prefill token reuse rate (primary metric)
+    total_prompt_tokens = sum(r.get('total_prompt_tokens', 0) for r in results)
+    cached_tokens_reused = stats['cached_tokens_reused']
+    token_reuse_rate = (cached_tokens_reused / total_prompt_tokens) if total_prompt_tokens > 0 else 0.0
+    
+    print(f"\n⭐ PRIMARY METRIC - Prefill Token Reuse Rate:")
+    print(f"  Cached tokens reused: {cached_tokens_reused}")
+    print(f"  Total prompt tokens: {total_prompt_tokens}")
+    print(f"  Token reuse rate: {token_reuse_rate:.1%}")
+    print(f"  → {cached_tokens_reused} out of {total_prompt_tokens} tokens served from cache")
     
     # Prime request (baseline - full prefix processing)
     print(f"\nPrime request (full prefix prefill):")
