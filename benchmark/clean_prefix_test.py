@@ -78,42 +78,84 @@ You stay current with the latest developments in AI and machine learning, and yo
 
 Your goal is to make complex AI concepts accessible while maintaining technical accuracy. You help users build intuition and understanding, not just memorize facts. Now, please answer the following question: """
     
-    # Test with same prompt 4 times
-    test_prompt = LONG_PREFIX + "What is attention?"
+    # Test with different prompts sharing the same prefix
+    test_prompts = [
+        LONG_PREFIX + "What is attention?",
+        LONG_PREFIX + "What is backpropagation.",
+        LONG_PREFIX + "What is backpropagation formula?",
+        LONG_PREFIX + "What is back propagation in neural networks? Give examples."
+    ]
     
-    print(f"\nPrompt: {len(test_prompt)} characters (~{len(tokenizer(test_prompt)['input_ids'])} tokens)")
+    print(f"\nPrompt length: ~{len(test_prompts[0])} characters (~{len(tokenizer(test_prompts[0])['input_ids'])} tokens)")
     print(f"Shared prefix: {len(LONG_PREFIX)} characters")
+    print(f"Questions: 4 different questions sharing the same prefix")
     print(f"Max new tokens: 15\n")
     
+    # Prime the cache with just the shared prefix
     print("="*80)
+    print("PRIMING CACHE WITH SHARED PREFIX")
+    print("="*80)
+    print("\nProcessing shared prefix...")
+    _, prime_timings = generate(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=LONG_PREFIX.rstrip(),  # Cache the prefix alone (without trailing space)
+        prefix_cache=cache,
+        max_new_tokens=32,  # Generate minimal tokens
+        device=DEVICE
+    )
+    prefix_tokens = prime_timings.get('total_prompt_tokens', 0)
+    print(f"Cached {prefix_tokens} prefix tokens")
+    print(f"Cache entries: {len(cache._store)}")
+    
+    print("\n" + "="*80)
     print("RUNNING BENCHMARK")
     print("="*80)
     
     results = []
+    outputs = []
     
-    for i in range(4):
-        print(f"\nRequest {i+1}/4...")
+    for i, test_prompt in enumerate(test_prompts):
+        print(f"\nRequest {i+1}/4: {test_prompt[len(LONG_PREFIX):]}")
         text, timings = generate(
             model=model,
             tokenizer=tokenizer,
             prompt=test_prompt,
             prefix_cache=cache,
-            max_new_tokens=15,
+            max_new_tokens=32,
             device=DEVICE
         )
         
         results.append(timings)
+        outputs.append(text)
         
         # Show key metrics
+        total_tokens = timings.get('total_prompt_tokens', 0)
+        cached_tokens = timings.get('cached_tokens', 0)
+        cache_hit_rate = timings.get('cache_hit_rate', 0.0)
+        suffix_tokens = timings.get('suffix_tokens_processed', 0)
+        
+        # Calculate prefill time (TTFT) and tokens/sec for prefill
+        prefill_tokens = suffix_tokens if cached_tokens > 0 else total_tokens
+        prefill_time_s = timings['ttft_ms'] / 1000.0
+        prefill_tokens_per_sec = prefill_tokens / prefill_time_s if prefill_time_s > 0 else 0
+        
+        # Calculate decode tokens/sec
+        decode_time_s = timings['decode_ms'] / 1000.0
+        generated_tokens = 32  # max_new_tokens
+        decode_tokens_per_sec = generated_tokens / decode_time_s if decode_time_s > 0 else 0
+        
+        print(f"  Tokens: {total_tokens} total, {cached_tokens} cached ({cache_hit_rate:.1f}%)")
         print(f"  Tokenize: {timings['tokenize_ms']:.1f}ms")
         print(f"  Cache lookup: {timings['cache_lookup_ms']:.1f}ms")
-        print(f"  TTFT: {timings['ttft_ms']:.1f}ms", end="")
+        print(f"  Prefill: {timings['ttft_ms']:.1f}ms ({prefill_tokens} tokens, {prefill_tokens_per_sec:.1f} tok/s)", end="")
         if "prefix_tokens_saved" in timings:
-            print(f" (saved {timings['prefix_tokens_saved']} tokens) ✓")
+            print(f" [{cached_tokens} cached + {suffix_tokens} new] ✓")
         else:
-            print(" (full prefill)")
-        print(f"  Decode: {timings['decode_ms']:.1f}ms")
+            print(" [full prefill]")
+        print(f"  Decode: {timings['decode_ms']:.1f}ms ({generated_tokens} tokens, {decode_tokens_per_sec:.1f} tok/s)")
         print(f"  Total: {timings['total_ms']:.1f}ms")
+        print(f"  Output: {text}")
         
         time.sleep(0.2)
     
@@ -129,52 +171,55 @@ Your goal is to make complex AI concepts accessible while maintaining technical 
     print(f"  Misses: {stats['misses']}")
     print(f"  Hit rate: {stats['hit_rate']:.1%}")
     
-    # First request (cache miss)
+    # Prime request (baseline - full prefix processing)
+    print(f"\nPrime request (full prefix prefill):")
+    print(f"  Prefill: {prime_timings['ttft_ms']:.1f}ms ({prefix_tokens} tokens)")
+    prime_prefill_tok_per_sec = prefix_tokens / (prime_timings['ttft_ms'] / 1000.0) if prime_timings['ttft_ms'] > 0 else 0
+    print(f"  Throughput: {prime_prefill_tok_per_sec:.1f} tok/s")
+    
+    # First request (cache hit after priming)
     first = results[0]
-    print(f"\nFirst request (cache miss):")
-    print(f"  TTFT: {first['ttft_ms']:.1f}ms")
+    first_prefill_tokens = first.get('suffix_tokens_processed', first.get('total_prompt_tokens', 0))
+    first_prefill_tok_per_sec = first_prefill_tokens / (first['ttft_ms'] / 1000.0) if first['ttft_ms'] > 0 else 0
     
-    # Subsequent requests (cache hits)
-    if len(results) > 1:
-        cache_hits = results[1:]
-        avg_ttft_hits = sum(r['ttft_ms'] for r in cache_hits) / len(cache_hits)
-        avg_total_hits = sum(r['total_ms'] for r in cache_hits) / len(cache_hits)
-        
-        print(f"\nSubsequent requests (cache hits):")
-        print(f"  Average TTFT: {avg_ttft_hits:.1f}ms")
-        print(f"  Average Total: {avg_total_hits:.1f}ms")
-        
-        speedup = first['ttft_ms'] / avg_ttft_hits if avg_ttft_hits > 0 else 0
-        print(f"\n🚀 TTFT Speedup: {speedup:.2f}x faster!")
-        
-        if speedup > 1:
-            saved_ms = first['ttft_ms'] - avg_ttft_hits
-            print(f"   Saved {saved_ms:.1f}ms per request by reusing cached prefix")
+    print(f"\nFirst test request (cache hit):")
+    print(f"  Prefill: {first['ttft_ms']:.1f}ms ({first_prefill_tokens} tokens, {first_prefill_tok_per_sec:.1f} tok/s)")
+    print(f"  Cache utilization: {first.get('cache_hit_rate', 0):.1f}%")
     
-    print("\n" + "="*80)
-    print("KEY INSIGHTS")
-    print("="*80)
-    print("""
-✅ What's working correctly:
-   • Cache stores both past_key_values AND last_logits
-   • On exact match: NO redundant forward pass
-   • TTFT measures only model-critical path
-   • Cache lookup excluded from TTFT
-   • CPU storage → MPS transfer on hit (acceptable overhead)
+    # All cache hit requests (average)
+    avg_ttft_hits = sum(r['ttft_ms'] for r in results) / len(results)
+    avg_total_hits = sum(r['total_ms'] for r in results) / len(results)
+    avg_cache_util = sum(r.get('cache_hit_rate', 0) for r in results) / len(results)
+    
+    # Calculate average prefill throughput
+    avg_prefill_tokens = sum(r.get('suffix_tokens_processed', 0) for r in results) / len(results)
+    avg_prefill_tok_per_sec = avg_prefill_tokens / (avg_ttft_hits / 1000.0) if avg_ttft_hits > 0 else 0
+    
+    print(f"\nAll cache hit requests (avg):")
+    print(f"  Average Prefill: {avg_ttft_hits:.1f}ms ({avg_prefill_tokens:.1f} tokens, {avg_prefill_tok_per_sec:.1f} tok/s)")
+    print(f"  Average Total: {avg_total_hits:.1f}ms")
+    print(f"  Average Cache utilization: {avg_cache_util:.1f}%")
+    
+    # CORRECT SPEEDUP: prime_ttft / avg_cache_hit_ttft
+    speedup = prime_timings['ttft_ms'] / avg_ttft_hits if avg_ttft_hits > 0 else 0
+    print(f"\n🚀 Prefill Speedup: {speedup:.2f}x")
+    print(f"   Baseline (full prefix): {prime_timings['ttft_ms']:.1f}ms")
+    print(f"   With cache (suffix only): {avg_ttft_hits:.1f}ms")
+    
+    if speedup > 0:
+        saved_ms = prime_timings['ttft_ms'] - avg_ttft_hits
+        print(f"   Saved {saved_ms:.1f}ms per request ({saved_ms/prime_timings['ttft_ms']*100:.1f}% reduction)")
+    
+    # Overall summary
+    print(f"\n📊 Overall Performance:")
+    all_cache_util = sum(r.get('cache_hit_rate', 0) for r in results) / len(results)
+    all_prefill = sum(r['ttft_ms'] for r in results) / len(results)
+    all_decode = sum(r['decode_ms'] for r in results) / len(results)
+    print(f"  Average cache utilization: {all_cache_util:.1f}%")
+    print(f"  Average prefill time: {all_prefill:.1f}ms")
+    print(f"  Average decode time: {all_decode:.1f}ms")
+    print(f"  Prefill/Decode ratio: {all_prefill/all_decode:.2f}x")
 
-🎯 Performance characteristics:
-   • First request: Full prefill through all ~300-400 tokens
-   • Cache hits: Zero model computation (reuse cached logits)
-   • Speedup scales with prefix length
-   
-💡 Best use cases:
-   • Long system prompts (100-500+ tokens)
-   • Multi-turn conversations
-   • RAG with large context
-   • Batch requests with common prefixes
-"""
-)
-    print("="*80 + "\n")
 
 
 if __name__ == "__main__":

@@ -88,7 +88,9 @@ def generate(
     # ---- Tokenization (control-plane, not part of TTFT) ----
     t0 = time.time()
     input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(device)
+    total_tokens = input_ids.shape[1]
     timings["tokenize_ms"] = (time.time() - t0) * 1000
+    timings["total_prompt_tokens"] = total_tokens
 
     # ---- Prefix cache lookup (control-plane, excluded from TTFT) ----
     t_lookup_start = time.time()
@@ -110,6 +112,8 @@ def generate(
 
         # Store prefix (entire prompt) - this happens after TTFT ends
         timings["ttft_ms"] = (time.time() - t_ttft_start) * 1000
+        timings["cached_tokens"] = 0
+        timings["cache_hit_rate"] = 0.0
         
         prefix_cache.add(
             prefix_text=prompt,
@@ -121,6 +125,8 @@ def generate(
     else:
         # ===== PREFIX CACHE HIT =====
         prefix_len = cached.token_count
+        timings["cached_tokens"] = prefix_len
+        timings["cache_hit_rate"] = (prefix_len / total_tokens) * 100.0
 
         # Compute suffix tokens (if any)
         suffix_text = prompt[len(cached.prefix_text):]
@@ -129,6 +135,7 @@ def generate(
                 suffix_text,
                 return_tensors="pt"
             ).input_ids.to(device)
+            suffix_len = suffix_ids.shape[1]
 
             outputs = model(
                 input_ids=suffix_ids,
@@ -138,6 +145,14 @@ def generate(
 
             logits = outputs.logits[:, -1, :]
             past_key_values = outputs.past_key_values
+            
+            # Update cache: Store the shared prefix part only, NOT the full prompt
+            # This ensures future requests can benefit from the common prefix
+            # Only do this if we processed a suffix - keep the original cached prefix
+            # and don't overwrite with longer prompts that include variable suffixes
+            # 
+            # Strategy: Don't add new entries on suffix processing to keep cache focused
+            # on truly shared prefixes. The first request establishes the prefix boundary.
         else:
             # 🔑 Critical fix: NO forward pass when exact match
             logits = cached.last_logits
@@ -145,6 +160,7 @@ def generate(
 
         timings["ttft_ms"] = (time.time() - t_ttft_start) * 1000
         timings["prefix_tokens_saved"] = prefix_len
+        timings["suffix_tokens_processed"] = total_tokens - prefix_len
 
     # ---- Decode loop ----
     generated = []
